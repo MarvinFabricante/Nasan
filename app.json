@@ -2,6 +2,7 @@
   "expo": {
     "name": "NASAN",
     "slug": "nasan",
+    "scheme": "nasan",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -20,7 +21,8 @@
     },
     "plugins": [
       "expo-status-bar",
-      "expo-font"
+      "expo-font",
+      "expo-router"
     ]
   }
 }

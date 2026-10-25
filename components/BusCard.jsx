@@ -10,12 +10,18 @@ import {
 } from './theme';
 
 /**
- * Passenger-facing summary of a bus. The component reads only from `bus`, so
- * it automatically reflects the in-memory updates supplied by BusContext.
+ * Enhanced passenger-facing summary card of a bus.
+ * Supports selected highlighting, monitored badge, distance from user stop,
+ * nearest stop info, and quick tracking actions.
  */
 export default function BusCard({
   bus,
   onPress,
+  onMonitorPress,
+  selected = false,
+  isMonitored = false,
+  distance,
+  nearestStop,
   compact = false,
   showDriver = false,
   style,
@@ -30,28 +36,55 @@ export default function BusCard({
 
   return (
     <Pressable
-      accessibilityHint={onPress ? 'Opens bus details' : undefined}
-      accessibilityLabel={`${bus.busNumber}, ${status.label}, ${availableSeats} of ${totalSeats} seats available`}
-      accessibilityRole={onPress ? 'button' : undefined}
+      accessibilityHint={onPress ? 'Selects bus on map' : undefined}
+      accessibilityLabel={`${bus.busNumber}, ${status.label}, ${availableSeats} of ${totalSeats} seats available${isMonitored ? ', Monitored' : ''}`}
+      accessibilityRole="button"
+      accessibilityState={{ selected }}
       android_ripple={{ color: colors.sky }}
       onPress={onPress}
       style={({ pressed }) => [
         styles.card,
+        selected && styles.cardSelected,
         compact && styles.cardCompact,
         pressed && onPress && styles.cardPressed,
         style,
       ]}
       testID={testID}
     >
+      {/* Selected Indicator Ribbon */}
+      {selected ? <View style={styles.selectedRibbon} /> : null}
+
       <View style={styles.topRow}>
         <View style={styles.busIdentity}>
-          <View style={[styles.busIcon, { backgroundColor: status.backgroundColor }]}>
-            <Ionicons color={status.color} name="bus-outline" size={22} />
+          <View
+            style={[
+              styles.busIcon,
+              { backgroundColor: selected ? '#0B5CAB' : status.backgroundColor },
+            ]}
+          >
+            <Ionicons
+              color={selected ? '#FFFFFF' : status.color}
+              name="bus-outline"
+              size={22}
+            />
           </View>
           <View style={styles.identityText}>
-            <Text numberOfLines={1} style={styles.busNumber}>
-              {bus.busNumber}
-            </Text>
+            <View style={styles.numberRow}>
+              <Text numberOfLines={1} style={styles.busNumber}>
+                {bus.busNumber}
+              </Text>
+              {isMonitored ? (
+                <View style={styles.monitoredPill}>
+                  <Ionicons color="#C67800" name="notifications" size={11} />
+                  <Text style={styles.monitoredPillText}>Monitoring</Text>
+                </View>
+              ) : null}
+              {selected ? (
+                <View style={styles.selectedBadge}>
+                  <Text style={styles.selectedBadgeText}>SELECTED</Text>
+                </View>
+              ) : null}
+            </View>
             <Text numberOfLines={1} style={styles.route}>
               {bus.route}
             </Text>
@@ -59,9 +92,34 @@ export default function BusCard({
         </View>
 
         {bus.eta ? (
-          <View style={styles.etaPill}>
-            <Ionicons color={colors.navy} name="time-outline" size={14} />
-            <Text style={styles.etaText}>{bus.eta}</Text>
+          <View style={[styles.etaPill, selected && styles.etaPillSelected]}>
+            <Ionicons
+              color={selected ? '#0B5CAB' : colors.navy}
+              name="time-outline"
+              size={14}
+            />
+            <Text style={[styles.etaText, selected && styles.etaTextSelected]}>
+              {bus.eta}
+            </Text>
+          </View>
+        ) : null}
+      </View>
+
+      {/* Proximity / Distance & Nearest Stop Info */}
+      <View style={styles.metaRow}>
+        {distance ? (
+          <View style={styles.metaBadge}>
+            <Ionicons color="#104A7F" name="navigate-outline" size={12} />
+            <Text style={styles.metaBadgeText}>{distance}</Text>
+          </View>
+        ) : null}
+
+        {nearestStop ? (
+          <View style={styles.metaBadge}>
+            <Ionicons color="#556982" name="location-outline" size={12} />
+            <Text numberOfLines={1} style={styles.metaBadgeText}>
+              {nearestStop}
+            </Text>
           </View>
         ) : null}
       </View>
@@ -70,9 +128,45 @@ export default function BusCard({
         <Text style={styles.driverText}>Driver: {bus.driverName}</Text>
       ) : null}
 
-      <View style={[styles.statusPill, { backgroundColor: status.backgroundColor }]}>
-        <View style={[styles.statusDot, { backgroundColor: status.color }]} />
-        <Text style={[styles.statusText, { color: status.color }]}>{status.label}</Text>
+      <View style={styles.statusAndActionRow}>
+        <View
+          style={[styles.statusPill, { backgroundColor: status.backgroundColor }]}
+        >
+          <View style={[styles.statusDot, { backgroundColor: status.color }]} />
+          <Text style={[styles.statusText, { color: status.color }]}>
+            {status.label}
+          </Text>
+        </View>
+
+        {onMonitorPress ? (
+          <Pressable
+            accessibilityLabel={isMonitored ? 'Stop monitoring' : 'Monitor bus'}
+            hitSlop={8}
+            onPress={(e) => {
+              e.stopPropagation();
+              onMonitorPress(bus);
+            }}
+            style={({ pressed }) => [
+              styles.quickMonitorBtn,
+              isMonitored && styles.quickMonitorBtnActive,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Ionicons
+              color={isMonitored ? '#C67800' : '#4E6178'}
+              name={isMonitored ? 'notifications' : 'notifications-outline'}
+              size={14}
+            />
+            <Text
+              style={[
+                styles.quickMonitorText,
+                isMonitored && styles.quickMonitorTextActive,
+              ]}
+            >
+              {isMonitored ? 'Stop' : 'Track'}
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
 
       {!compact ? (
@@ -80,7 +174,8 @@ export default function BusCard({
           <View style={styles.seatHeading}>
             <Text style={styles.seatLabel}>Available seats</Text>
             <Text style={styles.seatValue}>
-              {availableSeats} <Text style={styles.seatTotal}>/ {totalSeats}</Text>
+              {availableSeats}{' '}
+              <Text style={styles.seatTotal}>/ {totalSeats}</Text>
             </Text>
           </View>
           <View style={styles.progressTrack}>
@@ -107,16 +202,35 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderColor: colors.border,
     borderRadius: radius.md,
-    borderWidth: 1,
+    borderWidth: 1.5,
+    marginBottom: spacing.md,
+    overflow: 'hidden',
     padding: spacing.lg,
+    position: 'relative',
     ...shadows.card,
+  },
+  cardSelected: {
+    backgroundColor: '#FAFDFE',
+    borderColor: '#0B5CAB',
+    borderWidth: 2,
+    shadowColor: '#0B5CAB',
+    shadowOpacity: 0.16,
+    shadowRadius: 14,
+    transform: [{ scale: 1.01 }],
+  },
+  selectedRibbon: {
+    backgroundColor: '#0B5CAB',
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    top: 0,
+    width: 5,
   },
   cardCompact: {
     paddingVertical: spacing.md,
   },
   cardPressed: {
-    opacity: 0.9,
-    transform: [{ scale: 0.99 }],
+    opacity: 0.92,
   },
   topRow: {
     alignItems: 'center',
@@ -141,11 +255,45 @@ const styles = StyleSheet.create({
   identityText: {
     flex: 1,
   },
+  numberRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
   busNumber: {
     color: colors.navy,
     fontSize: 16,
     fontWeight: '800',
     letterSpacing: 0.3,
+  },
+  monitoredPill: {
+    alignItems: 'center',
+    backgroundColor: '#FFF4E5',
+    borderColor: '#F5A623',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+  },
+  monitoredPillText: {
+    color: '#C67800',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  selectedBadge: {
+    backgroundColor: '#0B5CAB',
+    borderRadius: 5,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+  },
+  selectedBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 0.6,
   },
   route: {
     color: colors.muted,
@@ -160,16 +308,51 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 6,
   },
+  etaPillSelected: {
+    backgroundColor: '#DDEEFE',
+  },
   etaText: {
     color: colors.navy,
     fontSize: 12,
     fontWeight: '700',
     marginLeft: 4,
   },
+  etaTextSelected: {
+    color: '#0B5CAB',
+    fontWeight: '800',
+  },
+  metaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginLeft: 58,
+    marginTop: 6,
+  },
+  metaBadge: {
+    alignItems: 'center',
+    backgroundColor: '#F0F5FA',
+    borderRadius: 6,
+    flexDirection: 'row',
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  metaBadgeText: {
+    color: '#41556E',
+    fontSize: 10,
+    fontWeight: '700',
+  },
   driverText: {
     color: colors.muted,
     fontSize: 12,
-    marginLeft: 60,
+    marginLeft: 58,
+    marginTop: spacing.sm,
+  },
+  statusAndActionRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginLeft: 58,
     marginTop: spacing.sm,
   },
   statusPill: {
@@ -177,8 +360,6 @@ const styles = StyleSheet.create({
     alignSelf: 'flex-start',
     borderRadius: radius.pill,
     flexDirection: 'row',
-    marginLeft: 60,
-    marginTop: spacing.md,
     paddingHorizontal: 9,
     paddingVertical: 5,
   },
@@ -191,6 +372,30 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 12,
     fontWeight: '700',
+  },
+  quickMonitorBtn: {
+    alignItems: 'center',
+    backgroundColor: '#F2F5F8',
+    borderColor: '#D8E2EC',
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 4,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  quickMonitorBtnActive: {
+    backgroundColor: '#FFF5E6',
+    borderColor: '#F5A623',
+  },
+  quickMonitorText: {
+    color: '#4E6178',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  quickMonitorTextActive: {
+    color: '#C67800',
+    fontWeight: '800',
   },
   seatSection: {
     borderTopColor: colors.border,
@@ -229,5 +434,8 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     height: '100%',
     minWidth: 0,
+  },
+  pressed: {
+    opacity: 0.75,
   },
 });

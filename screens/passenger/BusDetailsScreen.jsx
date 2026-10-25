@@ -9,10 +9,17 @@ import {
   View,
 } from 'react-native';
 import MapView, { Marker, Polyline } from '../../components/NasanMap';
+import { Ionicons } from '@expo/vector-icons';
 
 import BusMarker from '../../components/BusMarker';
 import Header from '../../components/Header';
 import { useBuses } from '../../context/BusContext';
+import {
+  calculateDistanceKm,
+  findNearestStop,
+  formatDistance,
+} from '../../data/geoUtils';
+import { radius, shadows } from '../../components/theme';
 
 const FALLBACK_LOCATION = {
   latitude: 14.2785,
@@ -41,7 +48,10 @@ const mapRegionFor = (coordinate) => ({
 
 const getStatusStyle = (bus) => {
   const status = String(bus?.status || '').toLowerCase();
-  const unavailable = bus?.isAvailable === false || status.includes('full') || status.includes('unavailable');
+  const unavailable =
+    bus?.isAvailable === false ||
+    status.includes('full') ||
+    status.includes('unavailable');
 
   return unavailable
     ? { backgroundColor: '#FFF0F0', dot: '#DE3D3D', color: '#BD3030' }
@@ -65,7 +75,16 @@ const getCurrentLocation = (bus) => {
 };
 
 export default function BusDetailsScreen({ navigation, route }) {
-  const { buses = [], getBusById, passengerLocation } = useBuses();
+  const {
+    buses = [],
+    getBusById,
+    passengerLocation,
+    isBusMonitored,
+    toggleMonitorBus,
+    monitorThreshold,
+    setMonitorThreshold,
+  } = useBuses();
+
   const busId = route?.params?.busId;
   const bus =
     (typeof getBusById === 'function' ? getBusById(busId) : null) ||
@@ -76,7 +95,25 @@ export default function BusDetailsScreen({ navigation, route }) {
     : FALLBACK_LOCATION;
   const busCoordinate = getBusCoordinate(bus) || passengerCoordinate;
   const routePoints = getRoutePoints(bus);
-  const mapRegion = useMemo(() => mapRegionFor(busCoordinate), [busCoordinate.latitude, busCoordinate.longitude]);
+  const mapRegion = useMemo(
+    () => mapRegionFor(busCoordinate),
+    [busCoordinate.latitude, busCoordinate.longitude],
+  );
+
+  const isMonitored = bus ? isBusMonitored(bus.id) : false;
+
+  const distanceKm = useMemo(
+    () => (bus ? calculateDistanceKm(busCoordinate, passengerCoordinate) : 0),
+    [bus, busCoordinate, passengerCoordinate],
+  );
+
+  const nearest = useMemo(
+    () =>
+      bus?.routeStops
+        ? findNearestStop(bus.routeStops, passengerCoordinate)
+        : null,
+    [bus, passengerCoordinate],
+  );
 
   const goBack = () => {
     if (navigation?.canGoBack?.()) {
@@ -89,8 +126,6 @@ export default function BusDetailsScreen({ navigation, route }) {
   const backToMap = () => {
     const routeNames = navigation?.getState?.()?.routeNames || [];
 
-    // When this screen is opened from the passenger tab navigator, its sibling
-    // route is available directly. From the root stack, target the nested tab.
     if (navigation?.navigate && routeNames.includes('PassengerMap')) {
       navigation.navigate('PassengerMap');
       return;
@@ -107,12 +142,22 @@ export default function BusDetailsScreen({ navigation, route }) {
   if (!bus) {
     return (
       <SafeAreaView style={styles.safeArea}>
-        <StatusBar barStyle="dark-content" backgroundColor={styles.safeArea.backgroundColor} />
-        <Header title="Bus Details" subtitle="Live bus information" showBack onBackPress={goBack} />
+        <StatusBar
+          backgroundColor={styles.safeArea.backgroundColor}
+          barStyle="dark-content"
+        />
+        <Header
+          onBackPress={goBack}
+          showBack
+          subtitle="Live bus information"
+          title="Bus Details"
+        />
         <View style={styles.notFound}>
           <Text style={styles.notFoundIcon}>⌁</Text>
           <Text style={styles.notFoundTitle}>Bus not found</Text>
-          <Text style={styles.notFoundText}>This bus may no longer be active on the route.</Text>
+          <Text style={styles.notFoundText}>
+            This bus may no longer be active on the route.
+          </Text>
           <Pressable onPress={goBack} style={styles.primaryButton}>
             <Text style={styles.primaryButtonText}>Go back</Text>
           </Pressable>
@@ -128,60 +173,177 @@ export default function BusDetailsScreen({ navigation, route }) {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor={styles.safeArea.backgroundColor} />
+      <StatusBar
+        backgroundColor={styles.safeArea.backgroundColor}
+        barStyle="dark-content"
+      />
       <Header
-        title="Bus Details"
-        subtitle="Live bus information"
-        showBack
         onBackPress={goBack}
+        showBack
+        subtitle="Live bus information"
+        title="Bus Details"
       />
 
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
+        {/* Title Row */}
         <View style={styles.titleRow}>
-          <View style={styles.busEmblem}>
-            <Text style={styles.busEmblemText}>BUS</Text>
+          <View
+            style={[
+              styles.busEmblem,
+              isMonitored && styles.busEmblemMonitored,
+            ]}
+          >
+            <Ionicons color="#FFFFFF" name="bus" size={26} />
           </View>
           <View style={styles.titleCopy}>
-            <Text style={styles.busNumber}>{bus.busNumber || 'BUS'}</Text>
-            <Text numberOfLines={2} style={styles.route}>{bus.route || 'Route information'}</Text>
+            <View style={styles.numberRow}>
+              <Text style={styles.busNumber}>{bus.busNumber || 'BUS'}</Text>
+              {isMonitored ? (
+                <View style={styles.monitoredTag}>
+                  <Ionicons color="#C67800" name="notifications" size={11} />
+                  <Text style={styles.monitoredTagText}>MONITORED</Text>
+                </View>
+              ) : null}
+            </View>
+            <Text numberOfLines={2} style={styles.route}>
+              {bus.route || 'Route information'}
+            </Text>
           </View>
-          <View style={[styles.statusPill, { backgroundColor: statusStyle.backgroundColor }]}>
-            <View style={[styles.statusDot, { backgroundColor: statusStyle.dot }]} />
+          <View
+            style={[
+              styles.statusPill,
+              { backgroundColor: statusStyle.backgroundColor },
+            ]}
+          >
+            <View
+              style={[styles.statusDot, { backgroundColor: statusStyle.dot }]}
+            />
             <Text style={[styles.statusText, { color: statusStyle.color }]}>
-              {bus.status || (bus.isAvailable === false ? 'Unavailable' : 'Available')}
+              {bus.status ||
+                (bus.isAvailable === false ? 'Unavailable' : 'Available')}
             </Text>
           </View>
         </View>
 
+        {/* Map Card */}
         <View style={styles.mapCard}>
           <MapView
-            style={styles.map}
             initialRegion={mapRegion}
             showsCompass={false}
             showsScale={false}
+            style={styles.map}
             toolbarEnabled={false}
           >
             {routePoints.length > 1 ? (
               <Polyline
                 coordinates={routePoints}
-                strokeColor="#2C7BE5"
-                strokeWidth={4}
                 lineCap="round"
+                strokeColor="#0B5CAB"
+                strokeWidth={4.5}
               />
             ) : null}
-            <Marker coordinate={passengerCoordinate} anchor={{ x: 0.5, y: 0.5 }}>
+            <Marker
+              anchor={{ x: 0.5, y: 0.5 }}
+              coordinate={passengerCoordinate}
+            >
               <View style={styles.passengerMarker} />
             </Marker>
-            <BusMarker bus={bus} selected />
+            <BusMarker bus={bus} isMonitored={isMonitored} selected />
           </MapView>
           <View pointerEvents="none" style={styles.mapLabel}>
             <Text style={styles.mapLabelText}>Current bus location</Text>
           </View>
         </View>
 
+        {/* Monitor Bus Tracking Section */}
+        <View
+          style={[
+            styles.monitoringCard,
+            isMonitored && styles.monitoringCardActive,
+          ]}
+        >
+          <View style={styles.monitorHeaderRow}>
+            <View style={styles.monitorHeaderLeft}>
+              <View
+                style={[
+                  styles.monitorIconCircle,
+                  isMonitored && styles.monitorIconCircleActive,
+                ]}
+              >
+                <Ionicons
+                  color={isMonitored ? '#C67800' : '#0B5CAB'}
+                  name={isMonitored ? 'notifications' : 'notifications-outline'}
+                  size={20}
+                />
+              </View>
+              <View>
+                <Text style={styles.monitorTitle}>
+                  {isMonitored ? 'Bus is being tracked' : 'Track this bus'}
+                </Text>
+                <Text style={styles.monitorSubtitle}>
+                  {isMonitored
+                    ? `Alerting when within ${monitorThreshold}`
+                    : 'Get notified when bus approaches your stop'}
+                </Text>
+              </View>
+            </View>
+
+            <Pressable
+              accessibilityLabel={
+                isMonitored ? 'Stop Monitoring this bus' : 'Monitor Bus'
+              }
+              onPress={() => toggleMonitorBus(bus.id)}
+              style={({ pressed }) => [
+                styles.monitorActionBtn,
+                isMonitored && styles.monitorActionBtnActive,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.monitorActionBtnText,
+                  isMonitored && styles.monitorActionBtnTextActive,
+                ]}
+              >
+                {isMonitored ? 'Stop Monitoring' : 'Monitor Bus'}
+              </Text>
+            </Pressable>
+          </View>
+
+          {isMonitored ? (
+            <View style={styles.thresholdConfigRow}>
+              <Text style={styles.thresholdConfigLabel}>
+                Proximity threshold:
+              </Text>
+              <View style={styles.thresholdButtons}>
+                {(['500m', '1km', '5min']).map((th) => (
+                  <Pressable
+                    key={th}
+                    onPress={() => setMonitorThreshold(th)}
+                    style={[
+                      styles.thBtn,
+                      monitorThreshold === th && styles.thBtnActive,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.thBtnText,
+                        monitorThreshold === th && styles.thBtnTextActive,
+                      ]}
+                    >
+                      {th}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          ) : null}
+        </View>
+
+        {/* Available Seats Card */}
         <View style={styles.availabilityCard}>
           <View>
             <Text style={styles.cardEyebrow}>AVAILABLE SEATS</Text>
@@ -198,22 +360,58 @@ export default function BusDetailsScreen({ navigation, route }) {
           </View>
         </View>
 
+        {/* Trip Information Details Card */}
         <Text style={styles.detailHeading}>Trip information</Text>
         <View style={styles.detailCard}>
-          <DetailRow label="Driver" value={bus.driverName || 'Assigned driver'} icon="●" />
+          <DetailRow
+            icon="●"
+            label="Driver"
+            value={bus.driverName || 'Assigned driver'}
+          />
           <View style={styles.divider} />
-          <DetailRow label="Current location" value={getCurrentLocation(bus)} icon="⌖" />
+          <DetailRow
+            icon="⌖"
+            label="Current location"
+            value={getCurrentLocation(bus)}
+          />
           <View style={styles.divider} />
-          <DetailRow label="Occupied seats" value={`${occupiedSeats} passengers`} icon="◉" />
+          <DetailRow
+            icon="◎"
+            label="Distance to your stop"
+            value={formatDistance(distanceKm)}
+          />
           <View style={styles.divider} />
-          <DetailRow label="Bus status" value={bus.status || 'Available'} icon="✓" />
+          {nearest?.stop?.name ? (
+            <>
+              <DetailRow
+                icon="⚐"
+                label="Nearest route stop"
+                value={nearest.stop.name}
+              />
+              <View style={styles.divider} />
+            </>
+          ) : null}
+          <DetailRow
+            icon="◉"
+            label="Occupied seats"
+            value={`${occupiedSeats} passengers`}
+          />
+          <View style={styles.divider} />
+          <DetailRow
+            icon="✓"
+            label="Bus status"
+            value={bus.status || 'Available'}
+          />
         </View>
 
         <Pressable
-          accessibilityRole="button"
           accessibilityLabel="Back to bus map"
+          accessibilityRole="button"
           onPress={backToMap}
-          style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+          style={({ pressed }) => [
+            styles.primaryButton,
+            pressed && styles.pressed,
+          ]}
         >
           <Text style={styles.primaryButtonText}>Back to Map</Text>
           <Text style={styles.buttonArrow}>→</Text>
@@ -231,7 +429,9 @@ function DetailRow({ label, value, icon }) {
       </View>
       <View style={styles.detailCopy}>
         <Text style={styles.detailLabel}>{label}</Text>
-        <Text numberOfLines={1} style={styles.detailValue}>{value}</Text>
+        <Text numberOfLines={1} style={styles.detailValue}>
+          {value}
+        </Text>
       </View>
     </View>
   );
@@ -260,21 +460,39 @@ const styles = StyleSheet.create({
     marginRight: 12,
     width: 54,
   },
-  busEmblemText: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 0.5,
+  busEmblemMonitored: {
+    backgroundColor: '#0B5CAB',
   },
   titleCopy: {
     flex: 1,
     marginRight: 8,
+  },
+  numberRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
   },
   busNumber: {
     color: '#12263F',
     fontSize: 23,
     fontWeight: '900',
     letterSpacing: -0.5,
+  },
+  monitoredTag: {
+    alignItems: 'center',
+    backgroundColor: '#FFF4E5',
+    borderColor: '#F5A623',
+    borderRadius: 4,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  monitoredTagText: {
+    color: '#C67800',
+    fontSize: 9,
+    fontWeight: '900',
   },
   route: {
     color: '#68788E',
@@ -304,22 +522,24 @@ const styles = StyleSheet.create({
   mapCard: {
     borderColor: '#E2EAF4',
     borderRadius: 22,
-    borderWidth: 1,
+    borderWidth: 1.5,
     height: 210,
-    marginBottom: 18,
+    marginBottom: 16,
     overflow: 'hidden',
+    position: 'relative',
+    ...shadows.card,
   },
   map: {
     height: '100%',
     width: '100%',
   },
   passengerMarker: {
-    backgroundColor: '#2C7BE5',
+    backgroundColor: '#0B5CAB',
     borderColor: '#FFFFFF',
-    borderRadius: 9,
+    borderRadius: 10,
     borderWidth: 3,
-    height: 18,
-    width: 18,
+    height: 20,
+    width: 20,
   },
   mapLabel: {
     backgroundColor: 'rgba(18, 38, 63, 0.86)',
@@ -335,13 +555,115 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
+  monitoringCard: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#D8E5F2',
+    borderRadius: radius.md,
+    borderWidth: 1.5,
+    marginBottom: 18,
+    padding: 16,
+    ...shadows.card,
+  },
+  monitoringCardActive: {
+    backgroundColor: '#FAFDFE',
+    borderColor: '#F5A623',
+    borderWidth: 1.5,
+  },
+  monitorHeaderRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  monitorHeaderLeft: {
+    alignItems: 'center',
+    flex: 1,
+    flexDirection: 'row',
+    marginRight: 10,
+  },
+  monitorIconCircle: {
+    alignItems: 'center',
+    backgroundColor: '#EAF3FE',
+    borderRadius: 18,
+    height: 38,
+    justifyContent: 'center',
+    marginRight: 10,
+    width: 38,
+  },
+  monitorIconCircleActive: {
+    backgroundColor: '#FFF4E5',
+  },
+  monitorTitle: {
+    color: '#102D4B',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  monitorSubtitle: {
+    color: '#65788E',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  monitorActionBtn: {
+    backgroundColor: '#0B5CAB',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  monitorActionBtnActive: {
+    backgroundColor: '#FFF4E5',
+    borderColor: '#F5A623',
+    borderWidth: 1,
+  },
+  monitorActionBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  monitorActionBtnTextActive: {
+    color: '#C67800',
+  },
+  thresholdConfigRow: {
+    borderTopColor: '#EAF1F8',
+    borderTopWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 12,
+    paddingTop: 12,
+  },
+  thresholdConfigLabel: {
+    color: '#61748C',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  thresholdButtons: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  thBtn: {
+    backgroundColor: '#F0F5FA',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  thBtnActive: {
+    backgroundColor: '#0B5CAB',
+  },
+  thBtnText: {
+    color: '#4B6077',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  thBtnTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+  },
   availabilityCard: {
     alignItems: 'center',
     backgroundColor: '#173F70',
     borderRadius: 22,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 26,
+    marginBottom: 24,
     paddingHorizontal: 20,
     paddingVertical: 20,
     shadowColor: '#173F70',
@@ -454,7 +776,7 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     alignItems: 'center',
-    backgroundColor: '#2C7BE5',
+    backgroundColor: '#0B5CAB',
     borderRadius: 15,
     flexDirection: 'row',
     justifyContent: 'center',

@@ -1,18 +1,29 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef } from 'react';
 import {
+  FlatList,
   Pressable,
   SafeAreaView,
   StatusBar,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import MapView, { Marker, Polyline } from '../../components/NasanMap';
+import { Ionicons } from '@expo/vector-icons';
 
 import BusCard from '../../components/BusCard';
 import BusMarker from '../../components/BusMarker';
+import BusMapPopup from '../../components/BusMapPopup';
 import Header from '../../components/Header';
+import ProximityAlertBanner from '../../components/ProximityAlertBanner';
 import { useBuses } from '../../context/BusContext';
+import {
+  calculateDistanceKm,
+  findNearestStop,
+  formatDistance,
+} from '../../data/geoUtils';
+import { colors, radius, shadows, spacing } from '../../components/theme';
 
 const FALLBACK_LOCATION = {
   latitude: 14.2785,
@@ -32,25 +43,40 @@ const getRoutePoints = (bus) =>
     .map((point) => point?.coordinates || point)
     .filter(isCoordinate);
 
-const mapRegionFor = (coordinate) => ({
-  latitude: coordinate.latitude,
+const mapRegionFor = (coordinate, zoom = 0.05, verticalOffsetRatio = 0) => ({
+  latitude: coordinate.latitude - zoom * verticalOffsetRatio,
   longitude: coordinate.longitude,
-  latitudeDelta: 0.075,
-  longitudeDelta: 0.075,
+  latitudeDelta: zoom,
+  longitudeDelta: zoom,
 });
 
 export default function PassengerMapScreen({ navigation }) {
-  const { buses = [], passengerLocation } = useBuses();
+  const {
+    buses = [],
+    passengerLocation,
+    selectedBusId,
+    setSelectedBusId,
+    isBusMonitored,
+    toggleMonitorBus,
+    activeNotification,
+    dismissNotification,
+  } = useBuses();
+
+  const { width: windowWidth } = useWindowDimensions();
+  const isWideScreen = windowWidth >= 768;
+
   const mapRef = useRef(null);
-  const [selectedBusId, setSelectedBusId] = useState(null);
+  const busListRef = useRef(null);
 
   const passengerCoordinate = isCoordinate(passengerLocation)
     ? passengerLocation
     : FALLBACK_LOCATION;
+
   const initialRegion = useMemo(
-    () => mapRegionFor(passengerCoordinate),
+    () => mapRegionFor(passengerCoordinate, 0.08),
     [passengerCoordinate.latitude, passengerCoordinate.longitude],
   );
+
   const selectedBus = useMemo(
     () =>
       buses.find((bus) => String(bus.id) === String(selectedBusId)) ||
@@ -58,119 +84,246 @@ export default function PassengerMapScreen({ navigation }) {
       null,
     [buses, selectedBusId],
   );
-  const selectedRoute = getRoutePoints(selectedBus);
 
-  const openBusDetails = (bus) => {
-    if (bus?.id && navigation?.navigate) {
-      navigation.navigate('BusDetails', { busId: bus.id });
-    }
-  };
+  const selectedRoute = useMemo(
+    () => (selectedBus ? getRoutePoints(selectedBus) : []),
+    [selectedBus],
+  );
 
-  const centerOnPassenger = () => {
-    mapRef.current?.animateToRegion(mapRegionFor(passengerCoordinate), 350);
-  };
+  const openBusDetails = useCallback(
+    (bus) => {
+      if (bus?.id && navigation?.navigate) {
+        navigation.navigate('BusDetails', { busId: bus.id });
+      }
+    },
+    [navigation],
+  );
 
-  const selectBus = (bus) => {
-    const coordinate = getBusCoordinate(bus);
-    setSelectedBusId(bus.id);
-    if (coordinate) {
-      mapRef.current?.animateToRegion(mapRegionFor(coordinate), 350);
-    }
-  };
+  const centerOnPassenger = useCallback(() => {
+    mapRef.current?.animateToRegion(mapRegionFor(passengerCoordinate, 0.06), 350);
+  }, [passengerCoordinate]);
+
+  const selectBus = useCallback(
+    (bus) => {
+      const coordinate = getBusCoordinate(bus);
+      setSelectedBusId(bus.id);
+      if (coordinate) {
+        const offsetRatio = !isWideScreen ? 0.22 : 0;
+        mapRef.current?.animateToRegion(
+          mapRegionFor(coordinate, 0.035, offsetRatio),
+          350,
+        );
+      }
+
+      // Auto scroll list
+      const idx = buses.findIndex((b) => String(b.id) === String(bus.id));
+      if (idx >= 0 && busListRef.current) {
+        try {
+          busListRef.current.scrollToIndex({
+            index: idx,
+            animated: true,
+            viewPosition: 0.3,
+          });
+        } catch (e) {
+          // ignore
+        }
+      }
+    },
+    [buses, setSelectedBusId],
+  );
+
+  const selectedBusMeta = useMemo(() => {
+    if (!selectedBus) return null;
+    const coord = getBusCoordinate(selectedBus);
+    const dist = coord
+      ? formatDistance(calculateDistanceKm(coord, passengerCoordinate))
+      : null;
+    const nearest = selectedBus.routeStops
+      ? findNearestStop(selectedBus.routeStops, passengerCoordinate)
+      : null;
+    return {
+      distance: dist ? `${dist} away` : null,
+      nearestStop: nearest?.stop?.name
+        ? `Near ${nearest.stop.name}`
+        : selectedBus.currentLocationLabel,
+    };
+  }, [passengerCoordinate, selectedBus]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor={styles.safeArea.backgroundColor} />
-      <Header title="Live Map" subtitle="Buses around General Trias" />
+      <StatusBar
+        backgroundColor={styles.safeArea.backgroundColor}
+        barStyle="dark-content"
+      />
+      <Header subtitle="Buses around General Trias" title="Live Map" />
 
-      <View style={styles.mapArea}>
-        <MapView
-          ref={mapRef}
-          style={styles.map}
-          initialRegion={initialRegion}
-          showsCompass={false}
-          showsScale={false}
-          toolbarEnabled={false}
-        >
-          {selectedRoute.length > 1 ? (
-            <Polyline
-              coordinates={selectedRoute}
-              strokeColor="#2C7BE5"
-              strokeWidth={4}
-              lineCap="round"
-            />
-          ) : null}
+      {activeNotification ? (
+        <ProximityAlertBanner
+          notification={activeNotification}
+          onDismiss={dismissNotification}
+          onFocusBus={(id) => {
+            const b = buses.find((item) => String(item.id) === String(id));
+            if (b) selectBus(b);
+            dismissNotification();
+          }}
+        />
+      ) : null}
 
-          <Marker coordinate={passengerCoordinate} anchor={{ x: 0.5, y: 0.5 }}>
-            <View style={styles.passengerMarkerOuter}>
-              <View style={styles.passengerMarkerInner} />
-            </View>
-          </Marker>
-
-          {buses.map((bus) => {
-            if (!getBusCoordinate(bus)) {
-              return null;
-            }
-
-            return (
-              <BusMarker
-                key={String(bus.id)}
-                bus={bus}
-                selected={String(bus.id) === String(selectedBus?.id)}
-                onPress={() => selectBus(bus)}
+      <View style={[styles.container, isWideScreen && styles.wideContainer]}>
+        {/* Map Area */}
+        <View style={styles.mapArea}>
+          <MapView
+            ref={mapRef}
+            initialRegion={initialRegion}
+            showsCompass={false}
+            showsScale={false}
+            style={styles.map}
+            toolbarEnabled={false}
+          >
+            {selectedRoute.length > 1 ? (
+              <Polyline
+                coordinates={selectedRoute}
+                lineCap="round"
+                strokeColor="#0B5CAB"
+                strokeWidth={4.5}
               />
-            );
-          })}
-        </MapView>
+            ) : null}
 
-        <View pointerEvents="none" style={styles.legend}>
-          <View style={styles.legendItem}>
-            <View style={styles.youLegendDot} />
-            <Text style={styles.legendText}>You</Text>
+            <Marker
+              anchor={{ x: 0.5, y: 0.5 }}
+              coordinate={passengerCoordinate}
+              identifier="passenger_pin"
+            >
+              <View style={styles.passengerMarkerOuter}>
+                <View style={styles.passengerMarkerInner} />
+              </View>
+            </Marker>
+
+            {buses.map((bus) => {
+              if (!getBusCoordinate(bus)) return null;
+
+              const isSelected = String(bus.id) === String(selectedBus?.id);
+              const isMonitored = isBusMonitored(bus.id);
+
+              return (
+                <BusMarker
+                  key={String(bus.id)}
+                  bus={bus}
+                  isMonitored={isMonitored}
+                  onPress={() => selectBus(bus)}
+                  selected={isSelected}
+                  showCallout={false}
+                  userCoordinate={passengerCoordinate}
+                />
+              );
+            })}
+          </MapView>
+
+          {/* Legend */}
+          <View pointerEvents="none" style={styles.legend}>
+            <View style={styles.legendItem}>
+              <View style={styles.youLegendDot} />
+              <Text style={styles.legendText}>You</Text>
+            </View>
+            <View style={styles.legendDivider} />
+            <View style={styles.legendItem}>
+              <View style={styles.busLegendDot} />
+              <Text style={styles.legendText}>Bus</Text>
+            </View>
+            <View style={styles.legendDivider} />
+            <View style={styles.legendItem}>
+              <Ionicons color="#C67800" name="notifications" size={11} />
+              <Text style={styles.legendText}>Tracked</Text>
+            </View>
           </View>
-          <View style={styles.legendDivider} />
-          <View style={styles.legendItem}>
-            <View style={styles.busLegendDot} />
-            <Text style={styles.legendText}>Bus</Text>
-          </View>
+
+          {/* Center on user button */}
+          <Pressable
+            accessibilityLabel="Center map on your location"
+            accessibilityRole="button"
+            onPress={centerOnPassenger}
+            style={({ pressed }) => [
+              styles.locationControl,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Ionicons color="#0B5CAB" name="locate" size={20} />
+          </Pressable>
+
+          {/* Floating Selected Bus Popup */}
+          {selectedBus ? (
+            <View style={styles.mapPopupContainer}>
+              <BusMapPopup
+                bus={selectedBus}
+                distance={selectedBusMeta?.distance}
+                isMonitored={isBusMonitored(selectedBus.id)}
+                nearestStop={selectedBusMeta?.nearestStop}
+                onClose={() => setSelectedBusId(null)}
+                onToggleMonitor={toggleMonitorBus}
+                onViewDetails={openBusDetails}
+              />
+            </View>
+          ) : null}
         </View>
 
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Center map on your location"
-          onPress={centerOnPassenger}
-          style={({ pressed }) => [styles.locationControl, pressed && styles.pressed]}
-        >
-          <Text style={styles.locationControlIcon}>◎</Text>
-        </Pressable>
-
-        {selectedBus ? (
-          <View style={styles.selectedPanel}>
-            <View style={styles.panelHandle} />
-            <View style={styles.panelHeading}>
-              <View>
-                <Text style={styles.panelTitle}>Selected bus</Text>
-                <Text style={styles.panelSubtitle}>Tap a marker to switch buses</Text>
-              </View>
-              <Text style={styles.panelCounter}>{buses.length} nearby</Text>
+        {/* Synchronized Arriving Buses Drawer / Side Panel */}
+        <View style={[styles.bottomPanel, isWideScreen && styles.wideSidePanel]}>
+          <View style={styles.panelHeading}>
+            <View>
+              <Text style={styles.panelTitle}>Arriving buses</Text>
+              <Text style={styles.panelSubtitle}>
+                Tap a bus to highlight on map
+              </Text>
             </View>
-            <BusCard bus={selectedBus} onPress={() => openBusDetails(selectedBus)} />
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`View ${selectedBus.busNumber} details`}
-              onPress={() => openBusDetails(selectedBus)}
-              style={({ pressed }) => [styles.detailsButton, pressed && styles.pressed]}
-            >
-              <Text style={styles.detailsButtonText}>View bus details</Text>
-              <Text style={styles.detailsArrow}>→</Text>
-            </Pressable>
+            <Text style={styles.panelCounter}>
+              {buses.length} on routes
+            </Text>
           </View>
-        ) : (
-          <View style={styles.emptyPanel}>
-            <Text style={styles.emptyPanelTitle}>No buses on the map</Text>
-            <Text style={styles.emptyPanelText}>Bus markers will appear here when available.</Text>
-          </View>
-        )}
+
+          <FlatList
+            ref={busListRef}
+            contentContainerStyle={styles.listContent}
+            data={buses}
+            horizontal={!isWideScreen}
+            keyExtractor={(item) => String(item.id)}
+            onScrollToIndexFailed={(info) => {
+              busListRef.current?.scrollToOffset({
+                offset: info.averageItemLength * info.index,
+                animated: true,
+              });
+            }}
+            renderItem={({ item: bus }) => {
+              const coord = getBusCoordinate(bus);
+              const dist = coord
+                ? formatDistance(calculateDistanceKm(coord, passengerCoordinate))
+                : null;
+              const isSelected = String(bus.id) === String(selectedBus?.id);
+              const isMonitored = isBusMonitored(bus.id);
+
+              return (
+                <View
+                  style={
+                    isWideScreen
+                      ? styles.wideCardWrapper
+                      : styles.horizontalCardWrapper
+                  }
+                >
+                  <BusCard
+                    bus={bus}
+                    compact={!isWideScreen}
+                    distance={dist ? `${dist} away` : null}
+                    isMonitored={isMonitored}
+                    onMonitorPress={() => toggleMonitorBus(bus.id)}
+                    onPress={() => selectBus(bus)}
+                    selected={isSelected}
+                  />
+                </View>
+              );
+            }}
+            showsHorizontalScrollIndicator={false}
+            showsVerticalScrollIndicator={isWideScreen}
+          />
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -181,43 +334,47 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F5F8FC',
   },
+  container: {
+    flex: 1,
+  },
+  wideContainer: {
+    flexDirection: 'row',
+  },
   mapArea: {
     flex: 1,
-    overflow: 'hidden',
+    position: 'relative',
   },
   map: {
     ...StyleSheet.absoluteFillObject,
   },
   passengerMarkerOuter: {
     alignItems: 'center',
-    backgroundColor: 'rgba(44, 123, 229, 0.23)',
-    borderRadius: 18,
-    height: 36,
+    backgroundColor: 'rgba(11, 92, 171, 0.23)',
+    borderRadius: 20,
+    height: 38,
     justifyContent: 'center',
-    width: 36,
+    width: 38,
   },
   passengerMarkerInner: {
-    backgroundColor: '#2C7BE5',
+    backgroundColor: '#0B5CAB',
     borderColor: '#FFFFFF',
-    borderRadius: 10,
+    borderRadius: 11,
     borderWidth: 3,
-    height: 20,
-    width: 20,
+    height: 22,
+    width: 22,
   },
   legend: {
     alignItems: 'center',
     alignSelf: 'center',
-    backgroundColor: 'rgba(255,255,255,0.94)',
+    backgroundColor: 'rgba(255,255,255,0.95)',
     borderRadius: 999,
     flexDirection: 'row',
-    marginTop: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
     position: 'absolute',
-    shadowColor: '#12263F',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
+    ...shadows.card,
+    zIndex: 20,
   },
   legendItem: {
     alignItems: 'center',
@@ -225,7 +382,7 @@ const styles = StyleSheet.create({
     gap: 5,
   },
   youLegendDot: {
-    backgroundColor: '#2C7BE5',
+    backgroundColor: '#0B5CAB',
     borderColor: '#FFFFFF',
     borderRadius: 6,
     borderWidth: 2,
@@ -233,7 +390,7 @@ const styles = StyleSheet.create({
     width: 12,
   },
   busLegendDot: {
-    backgroundColor: '#21A768',
+    backgroundColor: '#168A58',
     borderColor: '#FFFFFF',
     borderRadius: 6,
     borderWidth: 2,
@@ -247,48 +404,53 @@ const styles = StyleSheet.create({
   },
   legendDivider: {
     backgroundColor: '#DCE5EF',
-    height: 16,
+    height: 14,
     marginHorizontal: 10,
     width: 1,
   },
   locationControl: {
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
+    borderColor: '#D4E2F0',
     borderRadius: 21,
-    bottom: 276,
+    borderWidth: 1,
     height: 42,
     justifyContent: 'center',
     position: 'absolute',
-    right: 18,
-    shadowColor: '#12263F',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
+    right: 16,
+    top: 60,
     width: 42,
+    ...shadows.floating,
+    zIndex: 25,
   },
-  locationControlIcon: {
-    color: '#1D4C80',
-    fontSize: 25,
-    fontWeight: '800',
-    lineHeight: 26,
-  },
-  selectedPanel: {
-    backgroundColor: '#F5F8FC',
-    borderTopLeftRadius: 27,
-    borderTopRightRadius: 27,
-    bottom: 0,
-    padding: 16,
-    paddingBottom: 18,
+  mapPopupContainer: {
+    bottom: 12,
+    left: 12,
     position: 'absolute',
-    width: '100%',
+    right: 12,
+    zIndex: 35,
   },
-  panelHandle: {
-    alignSelf: 'center',
-    backgroundColor: '#C8D4E2',
-    borderRadius: 999,
-    height: 4,
-    marginBottom: 12,
-    width: 42,
+  bottomPanel: {
+    backgroundColor: '#FFFFFF',
+    borderTopColor: '#E2EAF2',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: 1,
+    maxHeight: 230,
+    paddingBottom: 10,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    ...shadows.floating,
+  },
+  wideSidePanel: {
+    borderLeftColor: '#E2EAF2',
+    borderLeftWidth: 1,
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    borderTopWidth: 0,
+    flex: 0.8,
+    maxHeight: '100%',
+    padding: 18,
   },
   panelHeading: {
     alignItems: 'center',
@@ -311,46 +473,16 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
   },
-  detailsButton: {
-    alignItems: 'center',
-    backgroundColor: '#2C7BE5',
-    borderRadius: 13,
-    flexDirection: 'row',
-    height: 46,
-    justifyContent: 'center',
-    marginTop: 2,
+  listContent: {
+    paddingVertical: 4,
   },
-  detailsButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
+  horizontalCardWrapper: {
+    marginRight: 10,
+    width: 290,
   },
-  detailsArrow: {
-    color: '#FFFFFF',
-    fontSize: 19,
-    fontWeight: '800',
-    marginLeft: 9,
-  },
-  emptyPanel: {
-    backgroundColor: '#F5F8FC',
-    borderTopLeftRadius: 27,
-    borderTopRightRadius: 27,
-    bottom: 0,
-    padding: 24,
-    position: 'absolute',
+  wideCardWrapper: {
+    marginBottom: 8,
     width: '100%',
-  },
-  emptyPanelTitle: {
-    color: '#18324F',
-    fontSize: 17,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
-  emptyPanelText: {
-    color: '#74849A',
-    fontSize: 12,
-    marginTop: 4,
-    textAlign: 'center',
   },
   pressed: {
     opacity: 0.8,
